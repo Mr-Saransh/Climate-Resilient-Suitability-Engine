@@ -1,0 +1,6 @@
+{
+    "python.defaultInterpreterPath": "C:\\gee_env\\python.exe",
+    "python.terminal.activateEnvInSelectedTerminal": true,
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
+}
