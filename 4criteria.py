@@ -327,6 +327,17 @@ def tile_url(image, viz_params):
     return image.getMapId(viz_params)["tile_fetcher"].url_format
 
 
+def geotiff_download_url(image, roi, scale: int, name: str) -> str:
+    """Return an Earth Engine URL for one georeferenced GeoTIFF layer."""
+    return image.getDownloadURL({
+        "name": name,
+        "region": roi,
+        "scale": scale,
+        "crs": "EPSG:4326",
+        "format": "GEO_TIFF",
+    })
+
+
 @st.cache_data(show_spinner="Extracting spatial assessment samples…")
 def extract_samples(
     start_date: str,
@@ -451,6 +462,21 @@ with st.sidebar:
         suitability_opacity = st.slider("Suitability opacity", 0.1, 1.0, 0.78, 0.05)
     with st.expander("Export"):
         st.caption("Download the sampled spatial assessment table below.")
+    with st.expander("Local GeoTIFF export", expanded=True):
+        export_scale = st.select_slider(
+            "Export resolution (metres)", options=[250, 500, 1000, 3000], value=1000,
+            help=("1,000 m is recommended for this planning-level export. Some source datasets, "
+                  "particularly rainfall, have a coarser native resolution."),
+        )
+        prepare_geotiffs = st.button(
+            "Prepare GeoTIFF downloads",
+            help=("Creates temporary download links for the current study area, date range, "
+                  "and AHP weights."),
+            use_container_width=True,
+        )
+        st.caption("Includes raw environmental layers, four criterion scores, and final suitability.")
+        st.caption("For large study areas, use a coarser resolution; direct Earth Engine downloads are size-limited.")
+        geotiff_export_results = st.empty()
 
 matrix, normalized_matrix, weights, lambda_max, ci, cr = ahp_results(
     SAATY_OPTIONS[rain_slope_label],
@@ -485,6 +511,72 @@ with left:
 
 layers = make_layers(start_str, end_str, weight_tuple, roi_bounds)
 df_metrics = extract_samples(start_str, end_str, weight_tuple, roi_bounds)
+
+export_context = json.dumps({
+    "bounds": roi_bounds,
+    "start": start_str,
+    "end": end_str,
+    "weights": weight_tuple,
+    "scale": export_scale,
+}, sort_keys=True)
+
+if prepare_geotiffs:
+    export_layers = {
+        "Rainfall (GPM)": layers["rainfall"],
+        "Slope (SRTM)": layers["slope"],
+        "Temperature (MODIS LST)": layers["temperature"],
+        "Soil texture (USDA)": layers["soil"],
+        "Soil clay content": layers["soil_clay"],
+        "Rainfall suitability": layers["rainfall_suitability"],
+        "Slope suitability": layers["slope_suitability"],
+        "Temperature suitability": layers["temperature_suitability"],
+        "Soil suitability": layers["soil_suitability"],
+        "Final suitability": layers["suitability"],
+    }
+    try:
+        with st.spinner("Preparing GeoTIFF download links..."):
+            st.session_state.geotiff_exports = {
+                "context": export_context,
+                "urls": {
+                    label: geotiff_download_url(
+                        image,
+                        layers["roi"],
+                        export_scale,
+                        f"{label.lower().replace(' ', '_').replace('(', '').replace(')', '')}_{end.isoformat()}",
+                    )
+                    for label, image in export_layers.items()
+                },
+            }
+    except Exception as exc:
+        st.session_state.pop("geotiff_exports", None)
+        geotiff_export_results.error(f"GeoTIFF links could not be prepared: {exc}")
+
+stored_exports = st.session_state.get("geotiff_exports")
+if stored_exports and stored_exports["context"] == export_context:
+    with geotiff_export_results.container():
+        st.success("Your GeoTIFF layers are ready.")
+        for label, url in stored_exports["urls"].items():
+            st.link_button(f"Download {label}", url, use_container_width=True)
+        metadata = {
+            "study_area": st.session_state.study_area["name"],
+            "bounds_west_south_east_north": roi_bounds,
+            "date_range": {"start": start_str, "end_exclusive": end_str},
+            "export_resolution_metres": export_scale,
+            "ahp_weights": dict(zip(CRITERIA, weight_tuple)),
+            "layers": list(stored_exports["urls"]),
+        }
+        st.download_button(
+            "Download export metadata (JSON)",
+            data=json.dumps(metadata, indent=2),
+            file_name=f"suitability_export_metadata_{end.isoformat()}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+        st.caption("Links are temporary. Re-prepare them if a download link expires.")
+elif stored_exports:
+    geotiff_export_results.caption(
+        "GeoTIFF settings changed. Prepare new download links for the current analysis."
+    )
 
 with left:
     with map_stage.container():
